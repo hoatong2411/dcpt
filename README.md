@@ -101,13 +101,18 @@ Coming soon.
 If you find this repository useful, please consider giving a star ⭐ and citation.
 
 ```
-@inproceedings{
-hu2025universal,
-title={Universal Image Restoration Pre-training via Degradation Classification},
-author={Hu JiaKui and Zhengjian Yao and Jin Lujia and Lu Yanye},
-booktitle={The Thirteenth International Conference on Learning Representations},
-year={2025},
-url={https://openreview.net/forum?id=PacBhLzeGO}
+@article{hu2025universal,
+  title={Universal image restoration pre-training via degradation classification},
+  author={Hu, JiaKui and Jin, Lujia and Yao, Zhengjian and Lu, Yanye},
+  journal={arXiv preprint arXiv:2501.15510},
+  year={2025}
+}
+@article{hu2025universal,
+  title={Universal Image Restoration Pre-training via Degradation Classification},
+  author={JiaKui Hu and Lujia Jin and Zhengjian Yao and Yanye Lu},
+  booktitle={The Thirteenth International Conference on Learning Representations},
+  year={2025},
+  url={https://openreview.net/forum?id=PacBhLzeGO}
 }
 ```
 
