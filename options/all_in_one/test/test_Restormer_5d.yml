@@ -1,4 +1,4 @@
-name: Restormer_5d_no_dcpt
+name: Restormer_5d
 suffix: ~  # add suffix to saved images
 model_type: SRModel
 scale: 1
@@ -58,7 +58,7 @@ path:
 
 # validation settings
 val:
-  save_img: false
+  save_img: true
   suffix: ~  # add suffix to saved images, if None, use exp name
 
   metrics:

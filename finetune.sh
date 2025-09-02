@@ -1,0 +1,5 @@
+BASICSR_JIT=True torchrun --master-port 12345 --nproc_per_node 4 basicsr/all_in_one_train.py -opt options/all_in_one/train/train_NAFNet_AIO_5d.yml --launcher pytorch
+BASICSR_JIT=True torchrun --master-port 12345 --nproc_per_node 4 basicsr/all_in_one_train.py -opt options/all_in_one/train/train_NAFNet_AIO_10d.yml --launcher pytorch
+BASICSR_JIT=True torchrun --master-port 12345 --nproc_per_node 4 basicsr/all_in_one_train.py -opt options/all_in_one/train/train_SwinIR_AIO_5d.yml --launcher pytorch
+BASICSR_JIT=True torchrun --master-port 12345 --nproc_per_node 4 basicsr/all_in_one_train.py -opt options/all_in_one/train/train_Restormer_AIO_5d.yml --launcher pytorch
+BASICSR_JIT=True torchrun --master-port 12345 --nproc_per_node 4 basicsr/all_in_one_train.py -opt options/all_in_one/train/train_PromptIR_AIO_5d.yml --launcher pytorch

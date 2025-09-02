@@ -4,7 +4,7 @@ import torch
 from torch import nn as nn
 from torch.nn import functional as F
 
-from basicsr.archs.vgg_arch import VGGFeatureExtractor
+# from basicsr.archs.vgg_arch import VGGFeatureExtractor
 from basicsr.utils.registry import LOSS_REGISTRY
 
 from ..metrics.psnr_ssim import calculate_ssim_pt

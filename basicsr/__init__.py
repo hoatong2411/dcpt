@@ -8,4 +8,5 @@ from .models import *
 from .ops import *
 from .test import *
 from .train import *
+from .all_in_one_train import *
 from .utils import *

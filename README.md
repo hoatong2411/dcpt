@@ -8,13 +8,15 @@ MILab, Peking University
 
 🚀️🚀️ **News:**
 
+- 2025-9-2: Release the train scipts and CDD checkpoints of DCPT.
+
 - 2025-1-23: Our paper was accepted by ICLR 2025.
 
 - 2025-1-23: Release the inference scripts and pre-trained models of DCPT.
 
 **TODO-lists:**
 
-- [ ] Release the train scipts.
+- [x] Release the train scipts.
 - [ ] Handle real-world mixed-degradation images.
 
 ## 1. Abstract
@@ -54,7 +56,7 @@ PSNR and SSIM:
 
 ## 3. Quick Start
 
-### Test
+### Setup
 
 Clone via Github:
 
@@ -68,6 +70,33 @@ You also can create a new environment to avoid conflicts:
 ```
 conda env create -f environment.yml
 ```
+
+> !!! Remove `basicsr` in your python environment !!!
+
+### Pre-train
+
+```shell
+BASICSR_JIT=True torchrun --master-port 12345 --nproc_per_node 4 basicsr/all_in_one_train.py -opt options/all_in_one/pretrain/pretrain_NAFNet_AIO_5d.yml --launcher pytorch
+# see `pretrain.sh` for more options.
+```
+
+### Finetune
+
+```shell
+# change the path of pre-trained checkpoint in `pretrain_network_g` in the config file.
+BASICSR_JIT=True torchrun --master-port 12345 --nproc_per_node 4 basicsr/all_in_one_train.py -opt options/all_in_one/train/train_NAFNet_AIO_5d.yml --launcher pytorch
+# see `finetune.sh` for more options.
+```
+
+### Transfer
+
+```shell
+# change the path of pre-trained checkpoint in `pretrain_network_g` in the config file.
+BASICSR_JIT=True torchrun --master-port 12345 --nproc_per_node 4 basicsr/train.py -opt options/transfer/train_Restormer_DMB_from_DN_dc_guided.yml --launcher pytorch
+# see `options/transfer` for more options.
+```
+
+### Test
 
 Download [**pretrained models**](https://drive.google.com/drive/folders/17XKKgX3gbEWoma6ZQeRh8Dfazxy1iQpj?usp=drive_link), and put them in `./pretrained_models`.
 
@@ -85,14 +114,6 @@ python knn_gen.py # provide code is only for feature extraction of random initia
 python knn.py
 python t_sne.py
 ```
-
-### Pretrain
-
-Coming soon.
-
-### Train
-
-Coming soon.
 
 ## Citation
 

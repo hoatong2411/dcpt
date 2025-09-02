@@ -1,6 +1,6 @@
 import os
 import random
-
+import math
 import cv2
 import numpy as np
 import torch
@@ -15,9 +15,11 @@ from basicsr.data.data_util import (
     paths_from_lmdb,
 )
 from basicsr.data.transforms import augment, center_crop, paired_random_crop
+from basicsr.data.degradations import random_generate_poisson_noise, circular_lowpass_kernel, random_mixed_kernels
 from basicsr.utils import DiffJPEG, FileClient, bgr2ycbcr, imfrombytes, img2tensor
 from basicsr.utils.registry import DATASET_REGISTRY
 from basicsr.utils.mosaic_util import mosaic_CFA_Bayer
+from basicsr.utils.img_process_util import filter2D
 
 from .data_util import prctile_norm
 
@@ -386,6 +388,12 @@ class PairedImageDenoiseDataset(data.Dataset):
         if img_gt.shape[-1] == img_lq.shape[-1] == 3:
             img_gt = cv2.cvtColor(img_gt, cv2.COLOR_BGR2RGB)
             img_lq = cv2.cvtColor(img_lq, cv2.COLOR_BGR2RGB)
+        
+        if self.opt["phase"] == "train":
+            np.random.seed(seed=index)
+        else:
+            np.random.seed(seed=0)
+        # np.random.seed(seed=0)
 
         if self.sigma_type == "constant":
             sigma_value = self.sigma_range
@@ -394,12 +402,8 @@ class PairedImageDenoiseDataset(data.Dataset):
         elif self.sigma_type == "choice":
             sigma_value = random.choice(self.sigma_range)
 
-        if self.opt["phase"] == "train":
-            np.random.seed(seed=index)
-        else:
-            np.random.seed(seed=0)
-        # np.random.seed(seed=0)
         img_lq += np.random.normal(0, sigma_value / 255.0, img_lq.shape)
+        # img_lq = np.clip(img_lq, 0, 1)
 
         # HWC to CHW, numpy to tensor
         img_gt = torch.from_numpy(img_gt.transpose(2, 0, 1)).float().contiguous()
@@ -1027,3 +1031,348 @@ class PairedImageInpaintingDataset(data.Dataset):
             img = np.clip(img - mask, 0, 1)
 
         return img
+
+
+@DATASET_REGISTRY.register()
+class PairedImageTxtlistDataset(data.Dataset):
+    """Paired image dataset for image restoration.
+
+    Read LQ (Low Quality, e.g. LR (Low Resolution), blurry, noisy, etc) and GT image pairs.
+
+    There are three modes:
+
+    1. **lmdb**: Use lmdb files. If opt['io_backend'] == lmdb.
+    2. **meta_info_file**: Use meta information file to generate paths. \
+        If opt['io_backend'] != lmdb and opt['meta_info_file'] is not None.
+    3. **folder**: Scan folders to generate paths. The rest.
+
+    Args:
+        opt (dict): Config for train datasets. It contains the following keys:
+        dataroot_gt (str): Data root path for gt.
+        dataroot_lq (str): Data root path for lq.
+        meta_info_file (str): Path for meta information file.
+        io_backend (dict): IO backend type and other kwarg.
+        filename_tmpl (str): Template for each filename. Note that the template excludes the file extension.
+            Default: '{}'.
+        gt_size (int): Cropped patched size for gt patches.
+        use_hflip (bool): Use horizontal flips.
+        use_rot (bool): Use rotation (use vertical flip and transposing h and w for implementation).
+        scale (bool): Scale, which will be added automatically.
+        phase (str): 'train' or 'val'.
+    """
+
+    def __init__(self, opt):
+        super(PairedImageTxtlistDataset, self).__init__()
+        self.opt = opt
+        # file client (io backend)
+        self.file_client = None
+        self.io_backend_opt = opt["io_backend"]
+        self.decode = opt.get("decode", True)
+        self.mean = opt["mean"] if "mean" in opt else None
+        self.std = opt["std"] if "std" in opt else None
+        self.center_crop = opt["center_crop"] if "center_crop" in opt else None
+        self.gt_size = self.opt.get("gt_size", None)
+        self.hist = self.opt.get("hist", False)
+        self.datasets_balance = self.opt.get("datasets_balance", None)
+
+        if "filename_tmpl" in opt:
+            self.filename_tmpl = opt["filename_tmpl"]
+        else:
+            self.filename_tmpl = "{}"
+        
+        self.paths = []
+        for dataroot, txt_list, times in zip(opt["dataroot"], opt["txt_lists"], opt["datasets_balance"]):
+            with open(txt_list, "r") as f:
+                path_lists = f.readlines()
+            times = int(times)
+
+            for path in path_lists:
+                names = path.split(" ")
+                for _ in range(times):
+                    self.paths.append(
+                        {"lq_path": os.path.join(dataroot, names[1].replace("\n", "")), 
+                        "gt_path": os.path.join(dataroot, names[0].replace("\n", ""))}
+                    )
+
+        self.scale = self.opt["scale"]
+        self.depth = self.opt.get("depth", 8)
+        img_dtype = self.opt.get("dtype", "uint")
+        if img_dtype == "uint":
+            self.img_dtype = np.uint16
+        elif img_dtype == "float":
+            self.img_dtype = np.float32
+
+        # Load gt and lq images. Dimension order: HWC; channel order: BGR;
+        # image range: [0, 1], float32.
+        self.flag = "color"
+        if "color" in self.opt and self.opt["color"] == "y":
+            self.flag = "grayscale"
+
+        self.float32 = not self.opt.get("prctile_norm", False)
+
+    def __getitem__(self, index):
+        if self.file_client is None:
+            self.file_client = FileClient(
+                self.io_backend_opt.pop("type"), **self.io_backend_opt
+            )
+
+        gt_path = self.paths[index]["gt_path"]
+        if self.decode:
+            img_bytes = self.file_client.get(gt_path, "gt")
+            img_gt = imfrombytes(
+                img_bytes,
+                flag=self.flag,
+                depth=self.depth,
+                float32=self.float32,
+            )
+        else:
+            img_bytes = self.file_client.get(gt_path, "gt")
+            img = np.frombuffer(img_bytes, dtype=self.img_dtype)
+            h, w, c = img[0:3]
+            img_gt = img[3:].reshape(int(h), int(w), int(c))
+            if self.float32 and (self.img_dtype != np.float32):
+                img_gt = img_gt.astype(np.float32) / 255.0
+
+        lq_path = self.paths[index]["lq_path"]
+        if self.decode:
+            img_bytes = self.file_client.get(lq_path, "lq")
+            img_lq = imfrombytes(
+                img_bytes,
+                flag=self.flag,
+                depth=self.depth,
+                float32=self.float32,
+            )
+        else:
+            img_bytes = self.file_client.get(lq_path, "lq")
+            img = np.frombuffer(img_bytes, dtype=self.img_dtype)
+            h, w, c = img[0:3]
+            img_lq = img[3:].reshape(int(h), int(w), int(c))
+            if self.float32 and (self.img_dtype != np.float32):
+                img_lq = img_lq.astype(np.float32) / 255.0
+
+        if self.hist:
+            (b, g, r) = cv2.split((img_lq * 255).astype(np.uint8))
+            b = cv2.equalizeHist(b)
+            g = cv2.equalizeHist(g)
+            r = cv2.equalizeHist(r)
+            img_lq = cv2.merge((b, g, r)).astype(np.float32) / 255.0
+
+        # augmentation for training
+        if self.opt["phase"] == "train":
+            if img_gt.shape[-1] < self.gt_size or img_lq.shape[-2] < self.gt_size:
+                pad_h = self.gt_size - img_gt.shape[-1] if self.gt_size > img_gt.shape[-1] else 0
+                pad_w = self.gt_size - img_gt.shape[-2] if self.gt_size > img_gt.shape[-2] else 0
+                img_gt = cv2.copyMakeBorder(img_gt, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT101)
+                img_lq = cv2.copyMakeBorder(img_lq, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT101)
+
+            # random crop
+            img_gt, img_lq = paired_random_crop(
+                img_gt, img_lq, self.gt_size, self.scale, gt_path
+            )
+            # flip, rotation
+            img_gt, img_lq = augment(
+                [img_gt, img_lq], self.opt["use_hflip"], self.opt["use_rot"]
+            )
+        else:
+            if self.center_crop is not None:
+                img_gt = center_crop(img_gt, self.center_crop)
+                img_lq = center_crop(img_lq, self.center_crop)
+
+        # norm
+        if self.opt.get("prctile_norm", False):
+            img_gt = prctile_norm(img_gt)
+            img_lq = prctile_norm(img_lq)
+
+        # crop the unmatched GT images during validation or testing, especially for SR benchmark datasets
+        # TODO: It is better to update the datasets, rather than force to crop
+        if self.opt["phase"] != "train":
+            img_gt = img_gt[
+                0 : img_lq.shape[0] * self.scale, 0 : img_lq.shape[1] * self.scale, :
+            ]
+
+        # BGR to RGB
+        if img_gt.shape[-1] == img_lq.shape[-1] == 3:
+            img_gt = cv2.cvtColor(img_gt, cv2.COLOR_BGR2RGB)
+            img_lq = cv2.cvtColor(img_lq, cv2.COLOR_BGR2RGB)
+        # HWC to CHW, numpy to tensor
+        img_gt = torch.from_numpy(img_gt.transpose(2, 0, 1)).float().contiguous()
+        img_lq = torch.from_numpy(img_lq.transpose(2, 0, 1)).float().contiguous()
+
+        # normalize
+        if self.mean is not None or self.std is not None:
+            normalize(img_lq, self.mean, self.std, inplace=True)
+            normalize(img_gt, self.mean, self.std, inplace=True)
+
+        return {"lq": img_lq, "gt": img_gt, "lq_path": lq_path, "gt_path": gt_path}
+
+    def __len__(self):
+        return len(self.paths)
+
+
+@DATASET_REGISTRY.register()
+class PairedImageGaussianBlurDataset(data.Dataset):
+    """Paired image dataset for image restoration.
+
+    Read LQ (Low Quality, e.g. LR (Low Resolution), blurry, noisy, etc) and GT image pairs.
+
+    There are three modes:
+
+    1. **lmdb**: Use lmdb files. If opt['io_backend'] == lmdb.
+    2. **meta_info_file**: Use meta information file to generate paths. \
+        If opt['io_backend'] != lmdb and opt['meta_info_file'] is not None.
+    3. **folder**: Scan folders to generate paths. The rest.
+
+    Args:
+        opt (dict): Config for train datasets. It contains the following keys:
+        dataroot_gt (str): Data root path for gt.
+        dataroot_lq (str): Data root path for lq.
+        meta_info_file (str): Path for meta information file.
+        io_backend (dict): IO backend type and other kwarg.
+        filename_tmpl (str): Template for each filename. Note that the template excludes the file extension.
+            Default: '{}'.
+        gt_size (int): Cropped patched size for gt patches.
+        use_hflip (bool): Use horizontal flips.
+        use_rot (bool): Use rotation (use vertical flip and transposing h and w for implementation).
+        phase (str): 'train' or 'val'.
+    """
+
+    def __init__(self, opt):
+        super(PairedImageGaussianBlurDataset, self).__init__()
+        self.opt = opt
+        # file client (io backend)
+        self.file_client = None
+        self.io_backend_opt = opt["io_backend"]
+        self.decode = opt.get("decode", True)
+        self.mean = opt["mean"] if "mean" in opt else None
+        self.std = opt["std"] if "std" in opt else None
+        self.gt_size = opt.get("gt_size", 128)
+        self.scale_range = opt.get("scale_range", [0.05, 3])
+        self.center_crop = opt["center_crop"] if "center_crop" in opt else None
+
+        self.kernel_range = [2 * v + 1 for v in range(3, 11)]  # kernel size ranges from 7 to 21
+        # TODO: kernel range is now hard-coded, should be in the configure file
+        self.kernel_list = opt['kernel_list']
+        self.kernel_prob = opt['kernel_prob']  # a list for each kernel probability
+        self.blur_sigma = opt['blur_sigma']
+        self.betag_range = opt['betag_range']  # betag used in generalized Gaussian blur kernels
+        self.betap_range = opt['betap_range']  # betap used in plateau blur kernels
+
+        self.gt_folder = opt["dataroot_gt"]
+        if "filename_tmpl" in opt:
+            self.filename_tmpl = opt["filename_tmpl"]
+        else:
+            self.filename_tmpl = "{}"
+
+        if self.io_backend_opt["type"] == "lmdb":
+            self.io_backend_opt["db_paths"] = [self.gt_folder]
+            self.io_backend_opt["client_keys"] = ["gt"]
+            self.paths = paths_from_lmdb(self.gt_folder)
+        else:
+            self.paths = paths_from_folder(self.gt_folder)
+
+        self.depth = self.opt.get("depth", 8)
+
+        # Load gt and lq images. Dimension order: HWC; channel order: BGR;
+        # image range: [0, 1], float32.
+        self.flag = "color"
+        if "color" in self.opt and self.opt["color"] == "y":
+            self.flag = "grayscale"
+
+        self.float32 = not self.opt.get("prctile_norm", False)
+
+    def __getitem__(self, index):
+        if self.file_client is None:
+            self.file_client = FileClient(
+                self.io_backend_opt.pop("type"), **self.io_backend_opt
+            )
+
+        gt_path = self.paths[index]
+        if self.decode:
+            img_bytes = self.file_client.get(gt_path, "gt")
+            img_gt = imfrombytes(
+                img_bytes,
+                flag=self.flag,
+                depth=self.depth,
+                float32=self.float32,
+            )
+        else:
+            img_bytes = self.file_client.get(gt_path, "gt")
+            img = np.frombuffer(img_bytes, dtype=np.uint16)
+            h, w, c = img[0:3]
+            img_gt = img[3:].reshape(h, w, c)
+            if self.float32:
+                img_gt = img_gt.astype(np.float32) / 255.0
+
+        img_lq = img_gt.copy()
+        # augmentation for training
+        if self.opt["phase"] == "train":
+            if img_gt.shape[-1] < self.gt_size or img_lq.shape[-2] < self.gt_size:
+                pad_h = self.gt_size - img_gt.shape[-1] if self.gt_size > img_gt.shape[-1] else 0
+                pad_w = self.gt_size - img_gt.shape[-2] if self.gt_size > img_gt.shape[-2] else 0
+                img_gt = cv2.copyMakeBorder(img_gt, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT101)
+                img_lq = cv2.copyMakeBorder(img_lq, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT101)
+
+            # random crop
+            img_gt, img_lq = paired_random_crop(
+                img_gt, img_lq, self.gt_size, 1, gt_path
+            )
+            # flip, rotation
+            img_gt, img_lq = augment(
+                [img_gt, img_lq], self.opt["use_hflip"], self.opt["use_rot"]
+            )
+        else:
+            if self.center_crop is not None:
+                img_gt = center_crop(img_gt, self.center_crop)
+                img_lq = center_crop(img_lq, self.center_crop)
+
+        # norm
+        if self.opt.get("prctile_norm", False):
+            img_gt = prctile_norm(img_gt)
+            img_lq = prctile_norm(img_lq)
+
+        # BGR to RGB
+        if img_gt.shape[-1] == img_lq.shape[-1] == 3:
+            img_gt = cv2.cvtColor(img_gt, cv2.COLOR_BGR2RGB)
+            img_lq = cv2.cvtColor(img_lq, cv2.COLOR_BGR2RGB)
+
+        kernel_size = random.choice(self.kernel_range)
+        if np.random.uniform() < self.opt['sinc_prob']:
+            # this sinc filter setting is for kernels ranging from [7, 21]
+            if kernel_size < 13:
+                omega_c = np.random.uniform(np.pi / 3, np.pi)
+            else:
+                omega_c = np.random.uniform(np.pi / 5, np.pi)
+            kernel = circular_lowpass_kernel(omega_c, kernel_size, pad_to=False)
+        else:
+            kernel = random_mixed_kernels(
+                self.kernel_list,
+                self.kernel_prob,
+                kernel_size,
+                self.blur_sigma,
+                self.blur_sigma, [-math.pi, math.pi],
+                self.betag_range,
+                self.betap_range,
+                noise_range=None)
+        # pad kernel
+        pad_size = (21 - kernel_size) // 2
+        kernel = np.pad(kernel, ((pad_size, pad_size), (pad_size, pad_size)))
+        img_lq = cv2.filter2D(img_lq, -1, kernel=kernel)
+
+        # HWC to CHW, numpy to tensor
+        img_gt = torch.from_numpy(img_gt.transpose(2, 0, 1)).float().contiguous()
+        img_lq = torch.from_numpy(img_lq.transpose(2, 0, 1)).float().contiguous()
+
+        # normalize
+        if self.mean is not None or self.std is not None:
+            normalize(img_lq, self.mean, self.std, inplace=True)
+            normalize(img_gt, self.mean, self.std, inplace=True)
+
+        return {
+            "lq": img_lq,
+            "gt": img_gt,
+            "lq_path": gt_path,
+            "gt_path": gt_path,
+        }
+
+    def __len__(self):
+        return len(self.paths)
