@@ -153,7 +153,7 @@ class DCPTModel(BaseModel):
 
         self.net_g(self.lq, hook=True)
         cls_output = self.net_dc(self.lq, self.hook_outputs[::-1])
-
+        
         # classify loss
         if self.cri_classify:
             l_classify = self.cri_classify(cls_output, self.dataset_idx)

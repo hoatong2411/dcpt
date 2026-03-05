@@ -636,6 +636,7 @@ class PromptIR_NoImg_DC(nn.Module):
                 feature = F.interpolate(feature, scale_factor=1 / (2**i))
             lq_feats = self.bottleneck_layers[i](lq_feats + mixing_weights[i] * feature)
             lq_feats = self.downsample_layers[i](lq_feats)
+            # print("djkasjdksald", lq_feats)
         lq_feats = self.last_stage(lq_feats).mean(dim=[-1, -2])
         out = self.fc(lq_feats)
         return out

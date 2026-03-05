@@ -173,9 +173,17 @@ def parse_options(root_path, is_train=True):
         if "scale" in opt:
             dataset["scale"] = opt["scale"]
         if dataset.get("dataroot_gt") is not None:
-            dataset["dataroot_gt"] = osp.expanduser(dataset["dataroot_gt"])
+            gt = dataset["dataroot_gt"]
+            if isinstance(gt, list):
+                dataset["dataroot_gt"] = [osp.expanduser(p) for p in gt]
+            else:
+                dataset["dataroot_gt"] = osp.expanduser(gt)
         if dataset.get("dataroot_lq") is not None:
-            dataset["dataroot_lq"] = osp.expanduser(dataset["dataroot_lq"])
+            lq = dataset["dataroot_lq"]
+            if isinstance(lq, list):
+                dataset["dataroot_lq"] = [osp.expanduser(p) for p in lq]
+            else:
+                dataset["dataroot_lq"] = osp.expanduser(lq)
 
     # paths
     for key, val in opt["path"].items():

@@ -1,0 +1,43 @@
+name: NAFNet_5d_Custom
+model_type: DCPTModel
+scale: 1
+num_gpu: 1
+manual_seed: 0
+classify: true
+
+datasets:
+  test_1:
+    name: CustomLQ
+    type: SingleImageDataset
+    dataroot_lq: /content/drive/MyDrive/Colab_Notebooks/Research/Dataset/Test/LQ/
+    io_backend:
+      type: disk
+
+# network
+network_g:
+  type: NAFNet
+  width: 64
+  enc_blk_nums: [1, 1, 1, 28]
+  middle_blk_num: 1
+  dec_blk_nums: [1, 1, 1, 1]
+  window_size: 8
+
+find_unused_parameters: false
+hook_names: decoder
+
+network_dc:
+  type: PromptIR_NoImg_DC
+  feature_dims: [64, 128, 256, 512]
+  num_classes: 5
+
+
+# model path (QUAN TRỌNG)
+path:
+  pretrain_network_g: /content/dcpt/pretrained_models/net_g_180000.pth
+  param_key_g: params_ema
+  strict_load_g: true
+
+# validation
+val:
+  save_img: true
+  metrics: null

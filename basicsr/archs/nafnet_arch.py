@@ -208,15 +208,27 @@ class NAFNetBaseline(nn.Module):
             groups=1,
             bias=True,
         )
-        self.ending = nn.Conv2d(
+        
+        self.experts = nn.ModuleList([
+            nn.Conv2d(
             in_channels=width,
             out_channels=img_channel,
             kernel_size=3,
             padding=1,
             stride=1,
             groups=1,
-            bias=True,
-        )
+            bias=True,) for _ in range(5)
+        ])
+        
+        # self.ending = nn.Conv2d(
+        #     in_channels=width,
+        #     out_channels=img_channel,
+        #     kernel_size=3,
+        #     padding=1,
+        #     stride=1,
+        #     groups=1,
+        #     bias=True,
+        # )
 
         self.encoders = nn.ModuleList()
         # self.decoders = nn.ModuleList()
@@ -247,31 +259,63 @@ class NAFNetBaseline(nn.Module):
                 nn.Sequential(*[NAFBlock(chan) for _ in range(num)]),
             )
 
-    def forward(self, inp, hook=False):
-        # B, C, H, W = inp.shape
-        x = self.intro(inp)
+    def forward(self, inp, hook=False, routing_weight=None):
+        if routing_weight is None:
+            B, C, H, W = inp.shape
+            x = self.intro(inp)
 
-        encs = []
+            encs = []
 
-        for encoder, down in zip(self.encoders, self.downs):
-            x = encoder(x)
-            encs.append(x)
-            x = down(x)
+            for encoder, down in zip(self.encoders, self.downs):
+                x = encoder(x)
+                encs.append(x)
+                x = down(x)
 
-        x = self.middle_blks(x)
+            x = self.middle_blks(x)
 
-        for i, (up, enc_skip) in enumerate(zip(self.ups, encs[::-1])):
-            x = up(x)
-            x = x + enc_skip
-            decoder = getattr(self, f"decoder{i}")
-            x = decoder(x)
+            for i, (up, enc_skip) in enumerate(zip(self.ups, encs[::-1])):
+                x = up(x)
+                x = x + enc_skip
+                decoder = getattr(self, f"decoder{i}")
+                x = decoder(x)
 
-        if not hook:
-
-            x = self.ending(x)
-            x = x + inp
+            # if not hook:
+                # x = self.ending(x)
+                # x = x + inp
 
             return x
+        
+        else:
+            B, C, H, W = inp.shape
+            x = self.intro(inp)
+
+            encs = []
+
+            for encoder, down in zip(self.encoders, self.downs):
+                x = encoder(x)
+                encs.append(x)
+                x = down(x)
+
+            x = self.middle_blks(x)
+
+            for i, (up, enc_skip) in enumerate(zip(self.ups, encs[::-1])):
+                x = up(x)
+                x = x + enc_skip
+                decoder = getattr(self, f"decoder{i}")
+                x = decoder(x)
+                
+            # print(x.shape)
+            expert_outs = torch.stack(
+                    [expert(x) for expert in self.experts],
+                    dim=1
+            )
+            routing_weight = routing_weight.view(B, 5, 1, 1, 1)
+            out_feat = (expert_outs * routing_weight).sum(dim=1)
+
+            # print(out_feat.shape)
+            return out_feat
+                
+            
 
 
 @ARCH_REGISTRY.register()

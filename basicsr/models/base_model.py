@@ -74,6 +74,14 @@ class BaseModel:
         self.best_metric_results[dataset_name] = record
 
     def _update_best_metric_result(self, dataset_name, metric, val, current_iter):
+        # Initialize metric if not in best_metric_results (for auto-calculated metrics like final_score)
+        if metric not in self.best_metric_results[dataset_name]:
+            better = "higher"  # default to higher for auto-calculated metrics
+            init_val = float("-inf") if better == "higher" else float("inf")
+            self.best_metric_results[dataset_name][metric] = dict(
+                better=better, val=init_val, iter=-1
+            )
+        
         if self.best_metric_results[dataset_name][metric]["better"] == "higher":
             if val >= self.best_metric_results[dataset_name][metric]["val"]:
                 self.best_metric_results[dataset_name][metric]["val"] = val

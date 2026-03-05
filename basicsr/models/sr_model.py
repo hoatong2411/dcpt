@@ -34,19 +34,44 @@ class SRModel(BaseModel):
         in_channels = opt["network_g"].get("img_channel", 3)
         self.net_g = build_network(opt["network_g"])
         self.net_g = self.model_to_device(self.net_g)
+        
+        self.net_dc = build_network(opt["network_dc"])
+        self.net_dc = self.model_to_device(self.net_dc)
+        
         h = opt["network_g"].get("h", 128)
         self.print_network(self.net_g, (1, in_channels, h, h))
 
         self.grad_clip = opt.get("grad_clip", 0)
 
         # load pretrained models
-        load_path = self.opt["path"].get("pretrain_network_g", None)
-        if load_path is not None:
+        # load_path = self.opt["path"].get("pretrain_network_g", None)
+        # if load_path is not None:
+        #     param_key = self.opt["path"].get("param_key_g", "params")
+        #     self.load_network(
+        #         self.net_g,
+        #         load_path,
+        #         self.opt["path"].get("strict_load_g", True),
+        #         param_key,
+        #         self.opt.get("remove_norm", False),
+        #     )
+        
+        load_path_g = self.opt["path"].get("pretrain_network_g", None)
+        load_path_dc = self.opt["path"].get("pretrain_network_dc", None)
+        if load_path_g is not None:
             param_key = self.opt["path"].get("param_key_g", "params")
             self.load_network(
                 self.net_g,
-                load_path,
+                load_path_g,
                 self.opt["path"].get("strict_load_g", True),
+                param_key,
+                self.opt.get("remove_norm", False),
+            )
+        if load_path_dc is not None:
+            param_key = self.opt["path"].get("param_key_dc", "params")
+            self.load_network(
+                self.net_dc,
+                load_path_dc,
+                self.opt["path"].get("strict_load_dc", True),
                 param_key,
                 self.opt.get("remove_norm", False),
             )
@@ -78,12 +103,26 @@ class SRModel(BaseModel):
             else:
                 self.model_ema(0)  # copy net_g weight
             self.net_g_ema.eval()
+            
+        self.hook_outputs = list()
+
+        self.hooks = list()
+        hook_names = self.opt.get("hook_names", None)
+        for name, module in self.net_g.named_modules():
+            if hook_names in name and name.count(".") == 1:
+                hook = module.register_forward_hook(self.hook_forward_fn)
+                self.hooks.append(hook)
 
         # define losses
         if train_opt.get("pixel_opt"):
             self.cri_pix = build_loss(train_opt["pixel_opt"]).to(self.device)
         else:
             self.cri_pix = None
+            
+        if train_opt.get("classify_opt"):
+            self.cri_classify = build_loss(train_opt["classify_opt"]).to(self.device)
+        else:
+            self.cri_classify = None
 
         if train_opt.get("ldl_opt"):
             self.cri_ldl = build_loss(train_opt["ldl_opt"]).to(self.device)
@@ -122,10 +161,32 @@ class SRModel(BaseModel):
         self.optimizer_g = self.get_optimizer(
             optim_type, optim_params, **train_opt["optim_g"]
         )
+        
+        optim_params = []
+        for k, v in self.net_dc.named_parameters():
+            if v.requires_grad:
+                optim_params.append(v)
+            else:
+                logger = get_root_logger()
+                logger.warning(f"Params {k} will not be optimized.")
+        
         self.optimizers.append(self.optimizer_g)
+        
+        optim_type = train_opt["optim_dc"].pop("type")
+        self.optimizer_dc = self.get_optimizer(
+            optim_type, optim_params, **train_opt["optim_dc"]
+        )
+        self.optimizers.append(self.optimizer_dc)
+        
+    def hook_forward_fn(self, module, input, output):  # noqa
+        if isinstance(output, tuple):
+            output = output[-1]
+        self.hook_outputs.append(output)
 
     def feed_data(self, data):
         self.lq = data["lq"].to(self.device, non_blocking=True)
+        if "dataset_idx" in data.keys():
+            self.dataset_idx = data["dataset_idx"].to(self.device, non_blocking=True)
         if "gt" in data:
             self.gt = data["gt"].to(self.device, non_blocking=True)
 
@@ -133,7 +194,12 @@ class SRModel(BaseModel):
         self.net_g.train()
         self.optimizer_g.zero_grad()
 
-        self.output = self.net_g(self.lq)
+        self.hook_outputs = list()
+        self.net_g(self.lq, hook=True)
+        cls_output = self.net_dc(self.lq, self.hook_outputs[::-1])
+        routing_weight = torch.softmax(cls_output, dim=1)
+        
+        self.output = self.net_g(self.lq, routing_weight=routing_weight)
 
         l_total = 0
         loss_dict = OrderedDict()
@@ -160,6 +226,11 @@ class SRModel(BaseModel):
             if l_style is not None:
                 l_total += l_style
                 loss_dict["l_style"] = l_style
+                
+        if self.cri_classify:
+            l_classify = self.cri_classify(cls_output, self.dataset_idx)
+            l_total += l_classify
+            loss_dict["l_classify"] = l_classify
 
         l_total.backward()
 
@@ -167,6 +238,7 @@ class SRModel(BaseModel):
             torch.nn.utils.clip_grad_norm_(self.net_g.parameters(), self.grad_clip)
 
         self.optimizer_g.step()
+        self.optimizer_dc.step()
 
         self.log_dict = self.reduce_loss_dict(loss_dict)
 
@@ -177,11 +249,23 @@ class SRModel(BaseModel):
         if hasattr(self, "net_g_ema"):
             self.net_g_ema.eval()
             with torch.no_grad():
-                self.output = self.net_g_ema(self.lq)
+                self.hook_outputs = list()
+                self.net_g(self.lq, hook=True)
+                cls_output = self.net_dc(self.lq, self.hook_outputs[::-1])
+                routing_weight = torch.softmax(cls_output, dim=1)
+                
+                self.output = self.net_g(self.lq, routing_weight=routing_weight)
+                # self.output = self.net_g_ema(self.lq)
         else:
             self.net_g.eval()
             with torch.no_grad():
-                self.output = self.net_g(self.lq)
+                self.hook_outputs = list()
+                self.net_g(self.lq, hook=True)
+                cls_output = self.net_dc(self.lq, self.hook_outputs[::-1])
+                routing_weight = torch.softmax(cls_output, dim=1)
+                
+                self.output = self.net_g(self.lq, routing_weight=routing_weight)
+                # self.output = self.net_g(self.lq)
             self.net_g.train()
 
     def test_selfensemble(self):
@@ -499,6 +583,23 @@ class SRModel(BaseModel):
                 )
 
     def _log_validation_metric_values(self, current_iter, dataset_name, tb_logger):
+        # Calculate Final Score if required metrics are available
+        if (
+            "psnr" in self.metric_results
+            and "ssim" in self.metric_results
+            and "lpips" in self.metric_results
+        ):
+            psnr_val = self.metric_results["psnr"]
+            ssim_val = self.metric_results["ssim"]
+            lpips_val = self.metric_results["lpips"]
+            # Formula: Final_Score = PSNR(Y) + 10 * SSIM(Y) - 5 * LPIPS
+            final_score = psnr_val + 10 * ssim_val - 5 * lpips_val
+            self.metric_results["final_score"] = final_score
+            # Track best final_score
+            self._update_best_metric_result(
+                dataset_name, "final_score", final_score, current_iter
+            )
+
         log_str = f"Validation {dataset_name}\n"
         for metric, value in self.metric_results.items():
             log_str += f"\t # {metric}: {value:.4f}"
@@ -576,6 +677,7 @@ class SRModel(BaseModel):
         return out_dict
 
     def save(self, epoch, current_iter):
+        self.save_network(self.net_dc, "net_dc", current_iter)
         if hasattr(self, "net_g_ema"):
             self.save_network(
                 [self.net_g, self.net_g_ema],

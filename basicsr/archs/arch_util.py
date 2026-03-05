@@ -452,4 +452,4 @@ class Local_Base:
         replace_layers(self, *args, train_size=train_size, **kwargs)
         imgs = torch.rand(train_size)
         with torch.no_grad():
-            self.forward(imgs)
+            self.forward(imgs, hook=True)

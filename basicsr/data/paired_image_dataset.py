@@ -4,6 +4,7 @@ import math
 import cv2
 import numpy as np
 import torch
+from copy import deepcopy
 from torch.utils import data as data
 from torchvision.transforms.functional import normalize
 
@@ -20,6 +21,7 @@ from basicsr.utils import DiffJPEG, FileClient, bgr2ycbcr, imfrombytes, img2tens
 from basicsr.utils.registry import DATASET_REGISTRY
 from basicsr.utils.mosaic_util import mosaic_CFA_Bayer
 from basicsr.utils.img_process_util import filter2D
+from basicsr.data.concat_dataset import ConcatDataset
 
 from .data_util import prctile_norm
 
@@ -1376,3 +1378,60 @@ class PairedImageGaussianBlurDataset(data.Dataset):
 
     def __len__(self):
         return len(self.paths)
+
+
+@DATASET_REGISTRY.register()
+class MultiDegradationDataset(data.Dataset):
+    """Dataset that combines multiple degradation types using ConcatDataset.
+    
+    Args:
+        opt (dict): Config for dataset. It must contain:
+            degradation_types (list): List of degradation type names (e.g., ['blur', 'haze', 'rain'])
+            dataroot_gt (list): List of paths to GT folders, one per degradation type
+            dataroot_lq (list): List of paths to LQ folders, one per degradation type
+            Other keys same as PairedImageDataset
+    """
+    
+    def __init__(self, opt):
+        super(MultiDegradationDataset, self).__init__()
+        self.opt = opt
+        
+        # Get degradation info
+        self.degradation_types = opt.get("degradation_types", [])
+        dataroot_gt_list = opt.get("dataroot_gt", [])
+        dataroot_lq_list = opt.get("dataroot_lq", [])
+        
+        if not isinstance(dataroot_gt_list, list):
+            dataroot_gt_list = [dataroot_gt_list]
+        if not isinstance(dataroot_lq_list, list):
+            dataroot_lq_list = [dataroot_lq_list]
+        
+        assert len(dataroot_gt_list) == len(dataroot_lq_list), \
+            f"Number of GT and LQ roots mismatch: {len(dataroot_gt_list)} vs {len(dataroot_lq_list)}"
+        assert len(self.degradation_types) == len(dataroot_gt_list), \
+            f"Number of degradation types and roots mismatch: {len(self.degradation_types)} vs {len(dataroot_gt_list)}"
+        
+        # Create a PairedImageDataset for each degradation type
+        self.datasets = []
+        for i, deg_type in enumerate(self.degradation_types):
+            # Create sub-dataset opts - deep copy to avoid sharing io_backend_opt
+            sub_opt = deepcopy(opt)
+            sub_opt["dataroot_gt"] = dataroot_gt_list[i]
+            sub_opt["dataroot_lq"] = dataroot_lq_list[i]
+            
+            # Create dataset
+            dataset = PairedImageDataset(sub_opt)
+            self.datasets.append(dataset)
+        
+        # Concat all datasets with equal enlarge ratios
+        enlarge_ratios = opt.get("dataset_enlarge_ratio", 1)
+        if not isinstance(enlarge_ratios, list):
+            enlarge_ratios = [enlarge_ratios] * len(self.datasets)
+        
+        self.concat_dataset = ConcatDataset(self.datasets, enlarge_ratios)
+    
+    def __len__(self):
+        return len(self.concat_dataset)
+    
+    def __getitem__(self, idx):
+        return self.concat_dataset[idx]

@@ -418,3 +418,45 @@ class MixUp_AUG:
         kpts_noisy = lam_kpt * kpts_noisy + (1 - lam_kpt) * kpts_noisy2
 
         return rgb_gt, rgb_noisy, kpts_gt, kpts_noisy
+
+
+def build_multitask_dataset(root):
+    """
+    root/
+        Blur/
+        Haze/
+        Lowlight/
+        Rain/
+        Snow/
+    """
+
+    mapping = {
+        "Blur": "deblur",
+        "Haze": "dehaze",
+        "Lowlight": "enhance",
+        "Rain": "derain",
+        "Snow": "desnow",
+    }
+
+    all_paths = []
+
+    for src, name in mapping.items():
+
+        lq = os.path.join(root, src, "LQ")
+        gt = os.path.join(root, src, "GT")
+
+        paths = paired_paths_from_folder(
+            [lq, gt],
+            ["lq", "gt"],
+            filename_tmpl="{}"
+        )
+
+        for p in paths:
+            p["task"] = name
+
+        all_paths.extend(paths)
+
+    print(f"Total images loaded: {len(all_paths)}")
+
+    return all_paths
+
