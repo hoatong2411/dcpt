@@ -81,6 +81,7 @@ class SRModel(BaseModel):
 
     def init_training_settings(self):
         self.net_g.train()
+        self.net_dc.train()
         train_opt = self.opt["train"]
 
         self.ema_decay = train_opt.get("ema_decay", 0)
@@ -192,12 +193,15 @@ class SRModel(BaseModel):
 
     def optimize_parameters(self, current_iter):
         self.net_g.train()
+        self.net_dc.train()
         self.optimizer_g.zero_grad()
+        self.optimizer_dc.zero_grad()
 
         self.hook_outputs = list()
         self.net_g(self.lq, hook=True)
         cls_output = self.net_dc(self.lq, self.hook_outputs[::-1])
-        routing_weight = torch.softmax(cls_output, dim=1)
+        temperature = 0.5
+        routing_weight = torch.softmax(cls_output / temperature, dim=1).detach()
         
         self.output = self.net_g(self.lq, routing_weight=routing_weight)
 
@@ -248,21 +252,25 @@ class SRModel(BaseModel):
     def test(self):
         if hasattr(self, "net_g_ema"):
             self.net_g_ema.eval()
+            self.net_dc.eval()
             with torch.no_grad():
                 self.hook_outputs = list()
                 self.net_g(self.lq, hook=True)
                 cls_output = self.net_dc(self.lq, self.hook_outputs[::-1])
-                routing_weight = torch.softmax(cls_output, dim=1)
+                temperature = 0.5
+                routing_weight = torch.softmax(cls_output / temperature, dim=1).detach()
                 
                 self.output = self.net_g(self.lq, routing_weight=routing_weight)
                 # self.output = self.net_g_ema(self.lq)
         else:
             self.net_g.eval()
+            self.net_dc.eval()
             with torch.no_grad():
                 self.hook_outputs = list()
                 self.net_g(self.lq, hook=True)
                 cls_output = self.net_dc(self.lq, self.hook_outputs[::-1])
-                routing_weight = torch.softmax(cls_output, dim=1)
+                temperature = 0.5
+                routing_weight = torch.softmax(cls_output / temperature, dim=1).detach()
                 
                 self.output = self.net_g(self.lq, routing_weight=routing_weight)
                 # self.output = self.net_g(self.lq)

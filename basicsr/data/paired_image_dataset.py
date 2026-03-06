@@ -672,7 +672,8 @@ class PairedImageDehazeDataset(data.Dataset):
             if self.float32:
                 img_lq = img_lq.astype(np.float32) / 255.0
 
-        gt_name = lq_path.split("/")[-1].split("_")[0] + self.suffix
+        # gt_name = lq_path.split("/")[-1].split("_")[0] + self.suffix
+        gt_name = lq_path.split("/")[-1].split("_")[0]
         gt_path = os.path.join(self.gt_folder, gt_name)
         if self.decode:
             img_bytes = self.file_client.get(gt_path, "gt")
