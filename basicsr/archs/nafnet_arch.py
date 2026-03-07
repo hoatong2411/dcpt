@@ -220,6 +220,8 @@ class NAFNetBaseline(nn.Module):
             bias=True,) for _ in range(5)
         ])
         
+        for param in self.experts.parameters():
+            param.requires_grad = False
         # self.ending = nn.Conv2d(
         #     in_channels=width,
         #     out_channels=img_channel,

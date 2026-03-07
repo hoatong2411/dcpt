@@ -137,15 +137,15 @@ class DCPTModel(BaseModel):
         self.net_g.train()
         self.net_dc.eval()
         self.optimizer_g.zero_grad()
-        pix_output = self.net_g(self.gt, hook=False)
+        # pix_output = self.net_g(self.gt, hook=False)
         self.hook_outputs = list()
 
         l_total = 0
         # pixel loss
-        if self.cri_pixel:
-            l_pix = self.cri_pixel(pix_output, self.gt)
-            l_total += l_pix
-            loss_dict["l_pix"] = l_pix
+        # if self.cri_pixel:
+        #     l_pix = self.cri_pixel(pix_output, self.gt)
+        #     l_total += l_pix
+        #     loss_dict["l_pix"] = l_pix
 
         ### train to classify the degradation
         self.net_dc.train()
