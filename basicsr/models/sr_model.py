@@ -83,6 +83,15 @@ class SRModel(BaseModel):
         self.net_g.train()
         self.net_dc.train()
         train_opt = self.opt["train"]
+        
+        for p in self.net_g.parameters():
+            p.requires_grad = False
+        
+        for p in self.net_dc.parameters():
+            p.requires_grad = False
+
+        for p in self.net_g.experts.parameters():
+            p.requires_grad = True
 
         self.ema_decay = train_opt.get("ema_decay", 0)
         if self.ema_decay > 0:
@@ -173,11 +182,11 @@ class SRModel(BaseModel):
         
         self.optimizers.append(self.optimizer_g)
         
-        optim_type = train_opt["optim_dc"].pop("type")
-        self.optimizer_dc = self.get_optimizer(
-            optim_type, optim_params, **train_opt["optim_dc"]
-        )
-        self.optimizers.append(self.optimizer_dc)
+        # optim_type = train_opt["optim_dc"].pop("type")
+        # self.optimizer_dc = self.get_optimizer(
+        #     optim_type, optim_params, **train_opt["optim_dc"]
+        # )
+        # self.optimizers.append(self.optimizer_dc)
         
     def hook_forward_fn(self, module, input, output):  # noqa
         if isinstance(output, tuple):
@@ -195,7 +204,7 @@ class SRModel(BaseModel):
         self.net_g.train()
         self.net_dc.train()
         self.optimizer_g.zero_grad()
-        self.optimizer_dc.zero_grad()
+        # self.optimizer_dc.zero_grad()
 
         self.hook_outputs = list()
         self.net_g(self.lq, hook=True)
@@ -242,7 +251,7 @@ class SRModel(BaseModel):
             torch.nn.utils.clip_grad_norm_(self.net_g.parameters(), self.grad_clip)
 
         self.optimizer_g.step()
-        self.optimizer_dc.step()
+        # self.optimizer_dc.step()
 
         self.log_dict = self.reduce_loss_dict(loss_dict)
 

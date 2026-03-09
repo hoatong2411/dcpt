@@ -160,7 +160,7 @@ train:
     restart_weights: [1]
     eta_min: !!float 1e-6
 
-  total_iter: 1000000  # 1000 epoch 1 nnproc
+  total_iter: 40000  # 1000 epoch 1 nnproc
   warmup_iter: -1  # no warm up
 
   # losses
